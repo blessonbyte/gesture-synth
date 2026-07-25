@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gesture Synth</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MediaPipe Hands CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4 font-sans">
+
+  <div class="max-w-xl w-full bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-700 text-center">
+    <h1 class="text-3xl font-extrabold bg-gradient-to-r from-cyan-400 to-indigo-500 bg-clip-text text-transparent mb-2">
+      Gesture Synth
+    </h1>
+    <p class="text-slate-400 text-sm mb-6">
+      Move your hand across the screen to change pitch and volume. Bring index finger and thumb together to pinch/trigger!
+    </p>
+
+    <!-- Video Canvas Container -->
+    <div class="relative w-full aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-700 shadow-inner mb-6">
+      <video id="webcam" class="hidden" playsinline></video>
+      <canvas id="output_canvas" class="w-full h-full object-cover transform -scale-x-100"></canvas>
+      
+      <!-- Overlay Audio Indicator -->
+      <div id="status" class="absolute bottom-3 left-3 bg-slate-900/80 backdrop-blur-md text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300">
+        Camera Inactive
+      </div>
+    </div>
+
+    <!-- Stats & Readout -->
+    <div class="grid grid-cols-2 gap-4 mb-6">
+      <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+        <span class="text-xs text-slate-400 block uppercase tracking-wider font-semibold">Pitch (Frequency)</span>
+        <span id="pitch-readout" class="text-lg font-mono font-bold text-cyan-400">--- Hz</span>
+      </div>
+      <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+        <span class="text-xs text-slate-400 block uppercase tracking-wider font-semibold">Volume (Gain)</span>
+        <span id="volume-readout" class="text-lg font-mono font-bold text-indigo-400">0 %</span>
+      </div>
+    </div>
+
+    <!-- Start Control Button -->
+    <button id="start-btn" class="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all duration-150 font-bold rounded-xl text-white shadow-lg shadow-indigo-600/30">
+      Enable Camera & Audio
+    </button>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const startBtn = document.getElementById('start-btn');
+    const statusEl = document.getElementById('status');
+    const pitchReadout = document.getElementById('pitch-readout');
+    const volumeReadout = document.getElementById('volume-readout');
+
+    // --- Web Audio Engine Setup ---
+    let audioCtx, osc, gainNode, filterNode;
+    let isAudioStarted = false;
+
+    function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      
+      osc = audioCtx.createOscillator();
+      gainNode = audioCtx.createGain();
+      filterNode = audioCtx.createBiquadFilter();
+
+      // Configure synth sound profile
+      osc.type = 'sawtooth';
+      filterNode.type = 'lowpass';
+      filterNode.frequency.setValueAtTime(800, audioCtx.currentTime);
+
+      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+
+      // Connect nodes: Oscillator -> Filter -> Gain -> Speakers
+      osc.connect(filterNode);
+      filterNode.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      osc.start();
+      isAudioStarted = true;
+    }
+
+    // --- MediaPipe Hand Tracking Setup ---
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    function onResults(results) {
+      // Clear canvas
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        statusEl.textContent = 'Hand Detected';
+        statusEl.className = 'absolute bottom-3 left-3 bg-emerald-950/80 text-emerald-400 border border-emerald-700 text-xs px-3 py-1.5 rounded-full';
+
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // Draw key landmarks (Index Tip = 8, Thumb Tip = 4)
+        const indexTip = landmarks[8];
+        const thumbTip = landmarks[4];
+
+        // Draw circles on index and thumb
+        [indexTip, thumbTip].forEach(pt => {
+          canvasCtx.beginPath();
+          canvasCtx.arc(pt.x * canvasElement.width, pt.y * canvasElement.height, 8, 0, 2 * Math.PI);
+          canvasCtx.fillStyle = '#38bdf8';
+          canvasCtx.fill();
+        });
+
+        if (isAudioStarted) {
+          // X-Axis controls Pitch (150 Hz to 850 Hz)
+          // (Invert X because camera display is mirrored)
+          const posX = 1 - indexTip.x;
+          const freq = Math.round(150 + posX * 700);
+
+          // Y-Axis controls Volume (1.0 at top, 0.0 at bottom)
+          const posY = Math.max(0, Math.min(1, 1 - indexTip.y));
+          const volume = Math.round(posY * 100);
+
+          // Calculate distance between thumb and index for pinch sensitivity
+          const dx = indexTip.x - thumbTip.x;
+          const dy = indexTip.y - thumbTip.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // Update audio properties with smooth automation ramps
+          osc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.03);
+          
+          // Modulation filter sweep based on pinch distance
+          filterNode.frequency.setTargetAtTime(300 + (1 - Math.min(distance * 3, 1)) * 3000, audioCtx.currentTime, 0.05);
+
+          // Master volume gain
+          gainNode.gain.setTargetAtTime(posY * 0.4, audioCtx.currentTime, 0.03);
+
+          // UI Updates
+          pitchReadout.textContent = `${freq} Hz`;
+          volumeReadout.textContent = `${volume} %`;
+        }
+      } else {
+        statusEl.textContent = 'Tracking Hand...';
+        statusEl.className = 'absolute bottom-3 left-3 bg-slate-900/80 text-slate-400 border border-slate-700 text-xs px-3 py-1.5 rounded-full';
+
+        if (isAudioStarted) {
+          gainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+          pitchReadout.textContent = `--- Hz`;
+          volumeReadout.textContent = `0 %`;
+        }
+      }
+      canvasCtx.restore();
+    }
+
+    // --- Start Web Camera & Trigger Audio Context ---
+    startBtn.addEventListener('click', async () => {
+      if (!isAudioStarted) initAudio();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+      startBtn.classList.add('hidden');
+
+      const camera = new Camera(videoElement, {
+        onFrame: async () => {
+          await hands.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+      });
+
+      canvasElement.width = 640;
+      canvasElement.height = 480;
+      camera.start();
+    });
+  </script>
+</body>
+</html>
